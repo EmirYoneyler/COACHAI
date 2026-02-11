@@ -1,7 +1,7 @@
 streamlit
-mediapipe
+mediapipe==0.10.14
 opencv-python
-numpy
+numpy<2
 openai
 pandas
 python-dotenv

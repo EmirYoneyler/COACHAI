@@ -52,7 +52,10 @@ st.title("🏋️ FitAI: Your AI Fitness Coach")
 page = st.sidebar.selectbox("Choose Mode", ["Motion Analysis", "AI Planner", "Chat"])
 
 if page == "Motion Analysis":
-    st.header("Real-Time Squat Analysis")
+    st.header("Real-Time Motion Analysis")
+    
+    # Exercise Selector
+    exercise_choice = st.selectbox("Select Exercise", ["Squat", "Curl", "Pushup"])
     
     if st.session_state.tracker is None:
         st.error("⚠️ Motion Tracker failed to load.")
@@ -65,13 +68,24 @@ if page == "Motion Analysis":
             
         st.info("If you see this, please try running 'start.bat' again to install dependencies.")
     else:
-        st.write("Enable your camera to start tracking.")
+        # Update tracker exercise
+        st.session_state.tracker.set_exercise(exercise_choice)
+        
+        st.write(f"Enable your camera to start tracking {exercise_choice}.")
         
         run = st.checkbox('Start Camera')
         FRAME_WINDOW = st.image([])
         
         camera = cv2.VideoCapture(0)
         
+        # Create placeholders for metrics to prevent memory leak/FPS drop
+        kpi1, kpi2, kpi3 = st.columns(3)
+        reps_display = kpi1.empty()
+        state_display = kpi2.empty()
+        feedback_display = kpi3.empty()
+
+        MAX_REPS_PER_SESSION = 50
+
         while run:
             _, frame = camera.read()
             if frame is None:
@@ -82,15 +96,24 @@ if page == "Motion Analysis":
             frame, data = st.session_state.tracker.process_frame(frame)
             counter = data['reps']
             state = data['state']
+            feedback = data.get('feedback', '')
             
+            # Update Metrics
+            reps_display.metric("Reps", counter)
+            state_display.metric("Stage", state)
+            feedback_display.metric("Feedback", feedback)
+            
+            if counter >= MAX_REPS_PER_SESSION:
+                st.error(f"Session limit reached ({MAX_REPS_PER_SESSION} reps) to save API credits.")
+                break
+
             # Display Output
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             FRAME_WINDOW.image(frame)
             
-            # Metrics
-            kpi1, kpi2 = st.columns(2)
-            kpi1.metric("Reps", counter)
-            kpi2.metric("State", state)
+            # Update Metrics using placeholders
+            reps_display.metric("Reps", counter)
+            state_display.metric("State", state)
         
         camera.release()
 
@@ -120,15 +143,37 @@ elif page == "AI Planner":
                     st.markdown(plan)
 
 elif page == "Chat":
-    st.header("Ask FitAI")
+    st.header("💬 Chat with Coach FitAI")
     
     if st.session_state.ai_engine is None:
         st.error("AI Engine is not initialized. Please check your API key and dependencies.")
     else:
-        user_input = st.text_input("Ask about fitness, nutrition, or health:")
-        
-        if st.button("Send"):
-            if user_input:
-                with st.spinner("Thinking..."):
-                    response = st.session_state.ai_engine.get_chat_response(user_input)
-                    st.write(response)
+        # Initialize chat history
+        if "messages" not in st.session_state:
+            st.session_state.messages = []
+
+        # Display chat messages from history on app rerun
+        for message in st.session_state.messages:
+            avatar = "💪" if message["role"] == "assistant" else "👤"
+            with st.chat_message(message["role"], avatar=avatar):
+                st.markdown(message["content"])
+
+        # Accept user input
+        if prompt := st.chat_input("Ask about fitness, nutrition, or health..."):
+            # Add user message to chat history
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            # Display user message in chat message container
+            with st.chat_message("user", avatar="👤"):
+                st.markdown(prompt)
+
+            # Display assistant response in chat message container
+            with st.chat_message("assistant", avatar="💪"):
+                with st.spinner("Coach AI is thinking..."):
+                    # Pass history excluding the latest user message which is passed strictly as the first arg in current implementation of get_chat_response would take care of appending it?
+                    # Actually get_chat_response takes (user_message, chat_history). 
+                    # If I pass chat_history as messages[:-1], then it appends user_message, so it matches.
+                    response = st.session_state.ai_engine.get_chat_response(prompt, st.session_state.messages[:-1])
+                    st.markdown(response)
+            
+            # Add assistant response to chat history
+            st.session_state.messages.append({"role": "assistant", "content": response})
