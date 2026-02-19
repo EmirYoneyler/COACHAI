@@ -6,7 +6,8 @@ load_dotenv()
 
 class AIEngine:
     def __init__(self):
-        api_key = os.getenv("OPENAI_API_KEY")
+        # API Key (Directly assigned)
+        api_key = "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"
         self.client = OpenAI(api_key=api_key) if api_key else None
         
         # Load the custom coach instructions
@@ -17,6 +18,53 @@ class AIEngine:
             self.chat_prompt = "You are FitAI, a concise and professional fitness coach."
             
         self.system_prompt = "You are FitAI, a strict biomechanics coach. Receive JSON data about exercise. Keep responses under 50 words. Focus on form correction."
+
+    def get_exercise_parameters(self, exercise_name: str) -> dict:
+        """
+        Asks the AI for the biomechanical parameters to track a new exercise.
+        Returns a JSON dict with:
+        - key_landmarks: [list of 3 pose landmarks to form an angle, e.g. ['LEFT_SHOULDER', 'LEFT_ELBOW', 'LEFT_WRIST']]
+        - thresholds: {'down': angle, 'up': angle} - indicating the range of motion
+        - description: "Short description"
+        """
+        if not self.client:
+            return None
+
+        prompt = f"""
+        Provide the biomechanical tracking parameters for the exercise: '{exercise_name}'.
+        Return ONLY valid JSON. No markdown.
+        Format:
+        {{
+            "landmarks": ["point_A", "point_B", "point_C"],
+            "thresholds": {{"min": number, "max": number}},
+            "mode": "min_max" or "max_min", 
+            "description": "Short description of the movement."
+        }}
+        - landmarks must be 3 specific MediaPipe Pose Landmarks keys (e.g. LEFT_HIP, LEFT_KNEE, LEFT_ANKLE) that best define the repetition.
+        - thresholds defines the angle values at the extremes of the movement.
+        - mode 'min_max' means start low, go high to count (like lateral raise), 'max_min' means start high, go low (like squat).
+        """
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": "You are a computer vision expert. You output strictly JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=200,
+                temperature=0.1
+            )
+            content = response.choices[0].message.content.strip()
+            # Clean possible markdown code blocks
+            if content.startswith("```"):
+                content = content.replace("```json", "").replace("```", "")
+            
+            import json
+            return json.loads(content)
+        except Exception as e:
+            print(f"Error getting parameters: {e}")
+            return None
 
     def analyze_form(self, motion_data: dict) -> str:
         """
@@ -39,6 +87,50 @@ class AIEngine:
             return "Error: OpenAI API Quota Exceeded. Please check your billing details at platform.openai.com."
         except Exception as e:
             return f"Error analyzing form: {str(e)}"
+
+    def analyze_recorded_set(self, data: dict) -> str:
+        """
+        Analyzes a full set of recorded motion data.
+        """
+        if not self.client:
+            return "Error: OpenAI API Key not found."
+
+        system_msg = "You are a strict Strength Coach. Output ONLY the Form Score, 3 specific cues, and a weight recommendation."
+        
+        prompt = f"""
+        Analyze this set of {data.get('exercise_name', 'Exercise')}.
+        Data: {str(data.get('frames', []))}
+        Keys: i=frame_index, a=angle, s=stage, l=landmarks(x,y).
+        
+        REQUIRED OUTPUT FORMAT (No other text):
+        Form Score: [0-10]/10
+        Cues for Improvement:
+        - [Cue 1]
+        - [Cue 2]
+        - [Cue 3]
+        
+        Recommendation:
+        - If Score < 7: "Your form is breaking down. Lower the weight immediately to prevent injury."
+        - If Score >= 7: "Good weight management. Focus on controlling the eccentric phase."
+        """
+
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[
+                    {"role": "system", "content": system_msg},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=300
+            )
+            return response.choices[0].message.content
+        except RateLimitError:
+            return "Error: Quota Exceeded."
+        except Exception as e:
+            # Fallback for Context Length Error - try to truncate
+            if "context_length_exceeded" in str(e):
+                return "Error: Recording too long. Please try a shorter set (max 10-15 reps)."
+            return f"Error analyzing set: {str(e)}"
 
     def generate_plan(self, user_stats: dict) -> str:
         """

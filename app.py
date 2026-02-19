@@ -54,8 +54,62 @@ page = st.sidebar.selectbox("Choose Mode", ["Motion Analysis", "AI Planner", "Ch
 if page == "Motion Analysis":
     st.header("Real-Time Motion Analysis")
     
+    # Custom Exercise Adder
+    with st.expander("➕ Add New Exercise Logic (AI Powered)"):
+        new_exercise_name = st.text_input("Enter Exercise Name (e.g., 'Lateral Raise')")
+        if st.button("Generate & Add"):
+            if new_exercise_name and st.session_state.ai_engine:
+                with st.spinner(f"Consulting AI Kinesiologist about {new_exercise_name}..."):
+                    params = st.session_state.ai_engine.get_exercise_parameters(new_exercise_name)
+                    if params and st.session_state.tracker:
+                        # Convert AI params to Tracker format
+                        # Tracker expects: landmarks (list), thresholds (up/down dict)
+                        # AI returns: landmarks, thresholds (min/max), mode
+                        
+                        tracker_config = {
+                            "description": params.get("description", "Custom AI Exercise"),
+                            "landmarks": params.get("landmarks", []),
+                            "thresholds": {},
+                            "mode": params.get("mode", "max_min")
+                        }
+                        
+                        # AI returns: min (low) and max (high)
+                        # Tracker uses: down (contraction point) and up (extension point/start)
+                        
+                        ai_min = params["thresholds"].get("min", 30)
+                        ai_max = params["thresholds"].get("max", 150)
+                        
+                        # Add margin/buffer to make reps easier to register
+                        # We want to trigger when user passes these thresholds inwards
+                        buffer = 15 
+                        
+                        # Apply buffer:
+                        # Down threshold (lower bound) -> increased by buffer (easier to go below)
+                        # Up threshold (upper bound) -> decreased by buffer (easier to go above)
+                        tracker_config["thresholds"]["down"] = ai_min + buffer
+                        tracker_config["thresholds"]["up"] = ai_max - buffer
+                        
+                        # Debug output to help user understand the range
+                        st.info(f"AI Parameters: {ai_min}° - {ai_max}°. Tracking set to: <{tracker_config['thresholds']['down']}° and >{tracker_config['thresholds']['up']}°.")
+                        
+                        st.session_state.tracker.add_custom_exercise(
+                            new_exercise_name, 
+                            config=tracker_config
+                        )
+                        st.success(f"Added {new_exercise_name}!")
+                        st.rerun() 
+                    else:
+                        st.error("Failed to get parameters.")
+    
     # Exercise Selector
-    exercise_choice = st.selectbox("Select Exercise", ["Squat", "Curl", "Pushup"])
+    # Get all available exercises from tracker
+    available_exercises = ["Squat", "Curl", "Pushup"]
+    if st.session_state.tracker:
+        available_exercises = list(st.session_state.tracker.good_forms.keys())
+        # Capitalize for display
+        available_exercises = [e.capitalize() for e in available_exercises]
+        
+    exercise_choice = st.selectbox("Select Exercise", available_exercises)
     
     if st.session_state.tracker is None:
         st.error("⚠️ Motion Tracker failed to load.")
@@ -73,7 +127,10 @@ if page == "Motion Analysis":
         
         st.write(f"Enable your camera to start tracking {exercise_choice}.")
         
-        run = st.checkbox('Start Camera')
+        col1, col2 = st.columns(2)
+        run = col1.checkbox('Start Camera', value=False)
+        record = col2.checkbox('Record Set (Check to start, Uncheck to stop & analyze)', value=False)
+        
         FRAME_WINDOW = st.image([])
         
         camera = cv2.VideoCapture(0)
@@ -83,6 +140,42 @@ if page == "Motion Analysis":
         reps_display = kpi1.empty()
         state_display = kpi2.empty()
         feedback_display = kpi3.empty()
+        
+        analysis_placeholder = st.empty()
+
+        # Display previous analysis if available
+        if "last_analysis" in st.session_state and st.session_state.last_analysis:
+            with analysis_placeholder.container():
+                st.success("Last Analysis Report:")
+                st.markdown(st.session_state.last_analysis)
+
+        # State management for recording
+        if "was_recording" not in st.session_state:
+            st.session_state.was_recording = False
+
+        if record:
+             if not st.session_state.was_recording:
+                 if st.session_state.tracker:
+                     st.session_state.tracker.start_recording()
+                 st.session_state.was_recording = True
+        else:
+             if st.session_state.was_recording:
+                 if st.session_state.tracker:
+                     result = st.session_state.tracker.stop_recording()
+                     reps = st.session_state.tracker.counter
+                     st.session_state.was_recording = False
+                     
+                     # Trigger Analysis
+                     if st.session_state.ai_engine:
+                         with analysis_placeholder.container():
+                             st.info(f"Analyzing set of {reps} reps...")
+                             analysis = st.session_state.ai_engine.analyze_recorded_set(result)
+                             st.success("Analysis Complete!")
+                             st.markdown(analysis)
+                             st.session_state.last_analysis = analysis 
+
+
+
 
         MAX_REPS_PER_SESSION = 50
 
@@ -103,6 +196,11 @@ if page == "Motion Analysis":
             state_display.metric("Stage", state)
             feedback_display.metric("Feedback", feedback)
             
+            # Recording Status Indicator
+            if record:
+                cv2.circle(frame, (30, 30), 20, (0, 0, 255), -1) 
+                cv2.putText(frame, "REC", (60, 40), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            
             if counter >= MAX_REPS_PER_SESSION:
                 st.error(f"Session limit reached ({MAX_REPS_PER_SESSION} reps) to save API credits.")
                 break
@@ -110,12 +208,9 @@ if page == "Motion Analysis":
             # Display Output
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             FRAME_WINDOW.image(frame)
-            
-            # Update Metrics using placeholders
-            reps_display.metric("Reps", counter)
-            state_display.metric("State", state)
         
         camera.release()
+
 
 elif page == "AI Planner":
     st.header("Personalized Workout & Diet Plan")

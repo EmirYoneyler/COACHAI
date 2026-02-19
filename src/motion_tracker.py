@@ -18,6 +18,11 @@ class MotionTracker:
         self.feedback = "Ready"
         self.current_exercise = "squat"
         
+        # Audio / Recording vars
+        self.recording = False
+        self.recorded_data = []
+        self.frame_count = 0
+
         # Good form definitions
         self.good_forms = {
             "squat": {
@@ -33,6 +38,32 @@ class MotionTracker:
                 "thresholds": {"down": 90, "up": 160}
             }
         }
+    
+    def start_recording(self):
+        """Starts recording pose data for later analysis."""
+        self.recording = True
+        self.recorded_data = [] # Reset data
+        self.frame_count = 0
+        print(f"Recording started for {self.current_exercise}")
+
+    def stop_recording(self):
+        """Stops recording and returns the collected data."""
+        self.recording = False
+        print(f"Recording stopped. Collected {len(self.recorded_data)} frames.")
+        return {
+            "exercise_name": self.current_exercise,
+            "frames": self.recorded_data
+        }
+
+    def add_custom_exercise(self, name, check_func=None, config=None):
+        """Adds a new exercise to track dynamically."""
+        name = name.lower()
+        if config:
+            # Enforce uppercase landmarks
+            if 'landmarks' in config:
+                config['landmarks'] = [str(l).upper().strip() for l in config['landmarks']]
+            self.good_forms[name] = config
+            print(f"Added custom exercise: {name}")
 
     def set_exercise(self, exercise_name: str):
         """Sets the current exercise to track."""
@@ -41,7 +72,8 @@ class MotionTracker:
             self.current_exercise = exercise_name
             self.counter = 0
             self.stage = None
-            self.feedback = f"Selected: {exercise_name.capitalize()}. {self.good_forms[exercise_name]['description']}"
+            desc = self.good_forms[exercise_name].get('description', '')
+            self.feedback = f"Selected: {exercise_name.capitalize()}. {desc}"
             return True
         return False
 
@@ -74,7 +106,7 @@ class MotionTracker:
         if state == "DOWN" and angle > 100: # Not deep enough when trying to go down, simplified logic
              feedback = "Go Lower"
              
-        return angle, state, feedback, knee # Return knee coordinates for text placement
+        return angle, state, feedback, knee, None # Return knee coordinates for text placement
 
     def _analyze_curl(self, landmarks):
         """Analyzes Bicep Curl form and counts reps."""
@@ -100,7 +132,7 @@ class MotionTracker:
         if state == "DOWN" and angle < 140:
             feedback = "Full Extension"
 
-        return angle, state, feedback, elbow
+        return angle, state, feedback, elbow, None
 
     def _analyze_pushup(self, landmarks):
         """Analyzes Pushup form and counts reps."""
@@ -125,7 +157,7 @@ class MotionTracker:
         if body_angle < 160 or body_angle > 200: # Simple plank check
             feedback = "Straighten Body"
             
-        return elbow_angle, state, feedback, elbow
+        return elbow_angle, state, feedback, elbow, None
     
 
     def _analyze_dynamic(self, landmarks):
@@ -134,24 +166,59 @@ class MotionTracker:
             config = self.good_forms[self.current_exercise]
             
             # AI'nın belirlediği eklemleri seç (Örn: Lunge için diz, Pushup için dirsek)
-            p1 = landmarks[getattr(self.mp_pose.PoseLandmark, config['landmarks'][0]).value]
-            p2 = landmarks[getattr(self.mp_pose.PoseLandmark, config['landmarks'][1]).value]
-            p3 = landmarks[getattr(self.mp_pose.PoseLandmark, config['landmarks'][2]).value]
+            lm_names = [str(l).upper().strip() for l in config['landmarks']]
+            
+            try:
+                p1_idx = getattr(self.mp_pose.PoseLandmark, lm_names[0]).value
+                p2_idx = getattr(self.mp_pose.PoseLandmark, lm_names[1]).value
+                p3_idx = getattr(self.mp_pose.PoseLandmark, lm_names[2]).value
+            except AttributeError:
+                # Fallback specifically for "Left_..." vs "LEFT_..." mismatches if simple upper() didn't work
+                # or if key is totally wrong
+                 return 0, self.stage, f"Bad Landmarks: {lm_names[0]}...", [0.5,0.5], None
+
+            p1 = landmarks[p1_idx]
+            p2 = landmarks[p2_idx]
+            p3 = landmarks[p3_idx]
 
             angle = calculate_angle([p1.x, p1.y], [p2.x, p2.y], [p3.x, p3.y])
 
             # AI'dan gelen eşiklere göre tekrar say
-            if angle > config["thresholds"]["up"]:
-                self.stage = "UP"
-            if angle < config["thresholds"]["down"] and self.stage == 'UP':
-                self.stage = "DOWN"
-                self.counter += 1
+            up_thresh = config['thresholds'].get('up', 160)
+            down_thresh = config['thresholds'].get('down', 90)
+            mode = config.get('mode', 'max_min')
+
+            # CASE 1: Start High, Go Low (Squat, Pushup, Curl - if measuring inner angle)
+            if mode == 'max_min':
+                if angle > up_thresh:
+                    self.stage = "UP"
+                    self.feedback = "Descend"
+                if angle < down_thresh and self.stage == "UP":
+                    self.stage = "DOWN"
+                    self.counter += 1
+                    self.feedback = "Push Up!"
+
+                if self.stage is None and angle <= up_thresh:
+                    self.feedback = "Fully Extend to Start"
+                    
+            # CASE 2: Start Low, Go High (Lateral Raise, Jumping Jack)
+            elif mode == 'min_max':
+                if angle < down_thresh:
+                    self.stage = "DOWN"
+                    self.feedback = "Lift High"
+                if angle > up_thresh and self.stage == "DOWN":
+                    self.stage = "UP"
+                    self.counter += 1
+                    self.feedback = "Return to Start"
                 
-            return angle, self.stage, self.feedback, [p2.x, p2.y]
+                if self.stage is None and angle >= down_thresh:
+                     self.feedback = "Lower Arms to Start"
+                
+            return angle, self.stage, self.feedback, [p2.x, p2.y], [p1, p2, p3]
         except Exception as e:
             # Fallback for configuration errors
             print(f"Dynamic Analysis Error: {e}")
-            return 0, self.stage, "Cfg Error", [0.5, 0.5]
+            return 0, self.stage, f"Error: {str(e)[:10]}", [0.5, 0.5], None
 
     def process_frame(self, frame):
         """
@@ -176,14 +243,29 @@ class MotionTracker:
             
             # Route logic based on selected exercise
             if self.current_exercise == "squat":
-                angle, self.stage, self.feedback, coord_norm = self._analyze_squat(landmarks)
+                angle, self.stage, self.feedback, coord_norm, _ = self._analyze_squat(landmarks)
             elif self.current_exercise == "curl":
-                angle, self.stage, self.feedback, coord_norm = self._analyze_curl(landmarks)
+                angle, self.stage, self.feedback, coord_norm, _ = self._analyze_curl(landmarks)
             elif self.current_exercise == "pushup":
-                angle, self.stage, self.feedback, coord_norm = self._analyze_pushup(landmarks)
+                angle, self.stage, self.feedback, coord_norm, _ = self._analyze_pushup(landmarks)
             else:
                  # Dynamic fallback
-                 angle, self.stage, self.feedback, coord_norm = self._analyze_dynamic(landmarks)
+                 angle, self.stage, self.feedback, coord_norm, _ = self._analyze_dynamic(landmarks)
+
+            # --- DATA RECORDING ---
+            if self.recording:
+                self.frame_count += 1
+                if self.frame_count % 10 == 0:  # Optimization: Sample every 10th frame to reduce data size
+                    # Only save coordinates - round heavily to save space
+                    # We only need x, y for analysis mostly. z is often extrapolated.
+                    pose_coords = [{"x": round(lm.x, 3), "y": round(lm.y, 3)} for lm in landmarks]
+                    
+                    self.recorded_data.append({
+                        "i": self.frame_count,       # Short key
+                        "a": int(angle),             # Short key, integer
+                        "s": self.stage,             # Short key
+                        "l": pose_coords             # Short key
+                    })
 
             text_coord = tuple(np.multiply(coord_norm, [640, 480]).astype(int))
             
