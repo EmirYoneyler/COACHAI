@@ -7,7 +7,7 @@ load_dotenv()
 class AIEngine:
     def __init__(self):
         # API Key (Directly assigned)
-        api_key = "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"
+        api_key = "KEYYY"
         self.client = OpenAI(api_key=api_key) if api_key else None
         
         # Load the custom coach instructions
