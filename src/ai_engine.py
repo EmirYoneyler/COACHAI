@@ -80,7 +80,7 @@ class AIEngine:
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": str(motion_data)}
                 ],
-                max_tokens=400
+                max_tokens=100
             )
             return response.choices[0].message.content
         except RateLimitError:
@@ -95,19 +95,15 @@ class AIEngine:
         if not self.client:
             return "Error: OpenAI API Key not found."
 
-        system_msg = "You are a strict Strength Coach. Provide a comprehensive analysis including Form Score, detailed cues for improvement, and a weight recommendation."
+        system_msg = "You are a strict Strength Coach. Output ONLY the Form Score, 3 specific cues, and a weight recommendation."
         
         prompt = f"""
         Analyze this set of {data.get('exercise_name', 'Exercise')}.
         Data: {str(data.get('frames', []))}
         Keys: i=frame_index, a=angle, s=stage, l=landmarks(x,y).
         
-        REQUIRED OUTPUT FORMAT:
+        REQUIRED OUTPUT FORMAT (No other text):
         Form Score: [0-10]/10
-        
-        Detailed Analysis:
-        [Provide a thorough breakdown of the user's form, noting specific issues at different parts of the movement]
-
         Cues for Improvement:
         - [Cue 1]
         - [Cue 2]
@@ -125,7 +121,7 @@ class AIEngine:
                     {"role": "system", "content": system_msg},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=600
+                max_tokens=300
             )
             return response.choices[0].message.content
         except RateLimitError:
@@ -149,9 +145,13 @@ class AIEngine:
         - Height: {user_stats.get('height')} cm
         - Goal: {user_stats.get('goal')}
         - Activity Level: {user_stats.get('activity_level')}
-        Detailed Workout Plan (Exercises, Sets, Reps)
         
-        Provide a comprehensive plan explaining the "why" behind these recommendations.
+        Provide:
+        1. Daily Calorie Target
+        2. Macro Split (Protein/Carbs/Fats)
+        3. 3 Key Exercises recommended
+        
+        Keep it under 150 words. Use bullet points.
         """
 
         try:
@@ -161,7 +161,7 @@ class AIEngine:
                     {"role": "system", "content": "You are a helpful fitness assistant."},
                     {"role": "user", "content": prompt}
                 ],
-                max_tokens=600
+                max_tokens=300
             )
             return response.choices[0].message.content
         except RateLimitError:
@@ -188,7 +188,7 @@ class AIEngine:
             response = self.client.chat.completions.create(
                 model="gpt-4o",
                 messages=messages,
-                max_tokens=500
+                max_tokens=150
             )
             return response.choices[0].message.content
         except RateLimitError:
